@@ -7,4 +7,4 @@ the SPY ETF (which tracks the S&P 500 Index) and to compare these with tradition
 (ARIMA, GARCH).
 
 # Data
-The data consists of daily prices of the SPY Index for the year 2021 (247 obs.), retrieved from Yahoo! Finance.
+The data consists of daily prices of SPY for the year 2021 (247 obs.), retrieved from Yahoo! Finance.
