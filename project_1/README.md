@@ -1,4 +1,4 @@
-# Project for predicting credit card fraud with Machine Learning
+# Predicting credit card fraud with Machine Learning
 
 It is very important for banks to ensure their clients have the best possible service.
 Thus, it is crucial for them to be able to recognize fraudulent credit card transactions,
