@@ -2,6 +2,7 @@
 
 #==== 0. DEPENDENCIES 
 from datetime import datetime
+from re import A
 import numpy as np, pandas as pd, matplotlib.pyplot as plt, seaborn as sns, os
 import yfinance as yf
 
@@ -12,7 +13,7 @@ from sklearn.metrics import r2_score, mean_squared_error
 from statsmodels.tsa.api import ExponentialSmoothing
 from sklearn.metrics import mean_squared_error as mse
 from tensorflow import keras
-from tensorflow.keras.callbacks import History 
+from tensorflow.keras.callbacks import History, EarlyStopping
 from tensorflow.keras.preprocessing import sequence
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, Dropout
@@ -36,18 +37,12 @@ data = yf.download('SPY','2012-01-01','2021-12-31')  #Data with SPY daily prices
 prices = pd.DataFrame(data.Close.astype('float32'))
 prices['day_of_week'] = prices.index.weekday       # Monday=0, Sunday=6
 
+prices['day_of_week'][1:]
+
 # Get sequences as weeks (starts at monday, ends on friday; sequences that include holidays are dropped (len(seq)<5))
 '''
-CODE HERE
+CODE HERE (not in use yet)
 '''
-def get_weeks(prices):
-    start = None
-    end = None
-    list = []
-    week = prices['Close'].iloc[start:end]
-    if len(week)==5: list.append(week)
-
-    return list
 
 #==== 2. TESTS
 # Dickey-Fuller Test (DFT)
@@ -71,7 +66,7 @@ def dftest(timeseries):
     plt.grid(True)
     plt.show(block=False)
 
-dftest(prices); #pval > 0.05: Cannot reject presence of unit root
+dftest(prices.Close); #pval > 0.05: Cannot reject presence of unit root
 
 # Autocorrelation and Partial Autocorrelation Plots
 def plot_autocorr(data, lags=None):
@@ -88,7 +83,7 @@ def plot_autocorr(data, lags=None):
     plt.show(block=False)
 
 plt.rcParams['figure.figsize'] = [11, 4]
-plot_autocorr(prices, lags=30)      #Very likely 1-day autocorr.
+plot_autocorr(prices.Close, lags=30)      #Very likely 1-day autocorr.
 plt.rcParams['figure.figsize'] = plt.rcParamsDefault["figure.figsize"]
 
 
@@ -96,19 +91,7 @@ plt.rcParams['figure.figsize'] = plt.rcParamsDefault["figure.figsize"]
 #==== 3. SPLITTING INTO TRAIN/TEST CHUNKS
 # Predicts closing price given prices of the past month (5-day week)
 SEQ_LENGTH = 20    #No. days as input (1 month)
-NUM_SEQ = 1000  #No. simulations
-
-def get_sequences(data, num_seq=NUM_SEQ, seq_length=SEQ_LENGTH):
-    idxs = np.random.randint(0,prices.shape[0]-seq_length+1, size=num_seq)  #Initializing random start of sequence
-    df = np.zeros(shape=(num_seq,seq_length))
-    for i in range(num_seq):
-        df[i,:]= np.array(prices.iloc[idxs[i]:idxs[i]+seq_length]).flatten()    #Simulate sequences
-    X = df[:,:-1]
-    y = df[:, -1]
-    return X, y
-
-X, y  = get_sequences(prices)
-X_train, X_test, y_train, y_test = train_test_split(X,y, test_size=0.3)
+TEST_LENGTH = 20*12   #Use last year as test set
 
 # Reshaping X to Keras format (n_features=1)
 def get_keras_format_series(series):
@@ -119,6 +102,35 @@ def get_keras_format_series(series):
     
     series = np.array(series)
     return series.reshape(series.shape[0], series.shape[1], 1)
+
+def get_sequences(timeseries, seq_length=SEQ_LENGTH, test_length=TEST_LENGTH):
+    """
+    Split a series into train and test in keras format
+    """
+    train = timeseries[:-test_length]   #training data is remaining months until amount of test_length
+    test = timeseries[-test_length:]    #test data is the remaining test_length
+    X_train, y_train = [], []
+
+    for i in range(0, train.shape[0]-seq_length, seq_length):
+        X_train.append(train[i:i+seq_length]) #each training sample is of length seq_length
+        y_train.append(train[i+seq_length]) #each y is just the next step after training sample
+
+    X_train = get_keras_format_series(X_train) # format our new training set to keras format
+    y_train = np.array(y_train) # make sure y is an array to work properly with keras
+
+    # Same process for test set
+    X_test, y_test = [], []
+
+    for i in range(0, test.shape[0]-seq_length, seq_length):
+        X_test.append(test[i:i+seq_length]) #each training sample is of length seq_length
+        y_test.append(test[i+seq_length]) #each y is just the next step after training sample
+
+    X_test = get_keras_format_series(X_test) # format our new training set to keras format
+    y_test = np.array(y_test) # make sure y is an array to work properly with keras
+
+    return X_train, X_test, y_train, y_test, train, test
+
+X_train, X_test, y_train, y_test, train, test  = get_sequences(prices.Close)
 
 #==== 3. MODELS
 # METRICS 
@@ -175,12 +187,15 @@ def compile_and_fit(model, X_train=X_train, X_test=X_test, y_train=y_train, y_te
                 metrics=[r_squared])
 
     # Fitting
+        # Early Stopping to prevent overfitting
+    es = EarlyStopping(monitor='val_loss', mode='min', patience=80)
+
     history = History()
     model.fit(get_keras_format_series(X_train), y_train,
             batch_size=batch_size,
             epochs=epochs,
             validation_data=(get_keras_format_series(X_test), y_test),
-            callbacks = [history])
+            callbacks = [history, es])
     return model, history
 
 model_rnn_fit, rnn_history = compile_and_fit(model=model_rnn, optimizer='RMSProp')
@@ -218,22 +233,31 @@ def predict_t_steps(X_init, t_steps, model):
     
     return preds
 
-y_pred_rnn = predict_t_steps(X_test, FORECAST_LENGTH, model_rnn)
-y_pred_lstm = predict_t_steps(X_test, FORECAST_LENGTH, model_lstm)
+EXAMPLE_NO = 3 # We have X_test.shape[0] examples to choose from
+def forecast_and_plot(X, forecast_length=FORECAST_LENGTH, n_example=EXAMPLE_NO):        # REVISAR ESTO !!!
+    # Forecasts
+    y_pred_rnn = predict_t_steps(X, forecast_length, model_rnn)[n_example,:]
+    y_pred_lstm = predict_t_steps(X, forecast_length, model_lstm)[n_example,:]
 
-start_range = range(1, X_test.shape[1]+1) #starting at one through to length of test_X_init to plot X_init
-predict_range = range(X_test.shape[1],X_test.shape[1]+ FORECAST_LENGTH)  #predict range is going to be from end of X_init to length of test_hours
+    # True values
+    y_true = test[(n_example+1)*(X.shape[1]+1):(n_example+1)*(X.shape[1]+1)+forecast_length]
 
-#using our ranges we plot X_init
-sns.lineplot(start_range, X_test[0,:])
+    # Plot
+    start_range = range(1, X.shape[1]+1) #starting at one through to length of X_test to plot X_test
+    predict_range = range(X.shape[1],X.shape[1]+ forecast_length)  #predict range is going to be from end of X_init to length of test_hours
+    #using our ranges we plot X_init
+    sns.lineplot(start_range, X[n_example,:].flatten(), color='black')
 
-#and test and actual preds
-#plt.plot(predict_range, y_test[0,:], color='orange')
-sns.lineplot(predict_range, y_pred_rnn[0,:], linestyle='--', label="RNN forecast")      #NECESITO CAMBIAR LA FORMA EN QUE SEPARO TEST Y TRAIN.
-sns.lineplot(predict_range, y_pred_lstm[0,:], linestyle='--', label="LSTM forecast")
-plt.show()
+    #and test and actual preds
+    sns.lineplot(predict_range, y_true, color='blue', label='Actual value')
+    sns.lineplot(predict_range, y_pred_rnn, color='red', linestyle='--', label="RNN forecast") 
+    sns.lineplot(predict_range, y_pred_lstm, color='green', linestyle='--', label="LSTM forecast")
+    plt.show()
+    return y_true, y_pred_rnn, y_pred_lstm
 
+forecast_and_plot(X_test,FORECAST_LENGTH,EXAMPLE_NO)
 
+X_test[1,:].flatten().shape
 # Scatter
 sns.scatterplot( x=y_test, y=y_pred,)
 ax = plt.gca()
