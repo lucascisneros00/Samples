@@ -3,8 +3,6 @@
 #==== 0. DEPENDENCIES 
 from datetime import datetime
 import numpy as np, pandas as pd, matplotlib.pyplot as plt, seaborn as sns, os
-from numpy.core.fromnumeric import shape, size
-from tensorflow.python.keras.metrics import accuracy
 import yfinance as yf
 
 import tensorflow as tf
@@ -32,14 +30,26 @@ seed(123)
 sns.set_theme(palette="viridis")
 warnings.filterwarnings('ignore') 
 
-#==== 1. DATA AND TESTS
+#==== 1. DATA AND PREPROCESSING
 # IMPORTING
-data = yf.download('SPY','2021-01-01','2021-12-27')  #Data with SPY daily prices in 2021
+data = yf.download('SPY','2012-01-01','2021-12-31')  #Data with SPY daily prices 2012-2021 (10 years)
 prices = pd.DataFrame(data.Close.astype('float32'))
+prices['day_of_week'] = prices.index.weekday       # Monday=0, Sunday=6
 
-#prices = pd.DataFrame(np.arange(0,500,1)+np.random.uniform(0,1,500))   #Fake data for testing
+# Get sequences as weeks (starts at monday, ends on friday; sequences that include holidays are dropped (len(seq)<5))
+'''
+CODE HERE
+'''
+def get_weeks(prices):
+    start = None
+    end = None
+    list = []
+    week = prices['Close'].iloc[start:end]
+    if len(week)==5: list.append(week)
 
-# TESTS 
+    return list
+
+#==== 2. TESTS
 # Dickey-Fuller Test (DFT)
 def dftest(timeseries):
     dftest = ts.adfuller(timeseries,)
@@ -61,10 +71,10 @@ def dftest(timeseries):
     plt.grid(True)
     plt.show(block=False)
 
-dftest(prices) #pval > 0.05: Cannot reject presence of unit root
+dftest(prices); #pval > 0.05: Cannot reject presence of unit root
 
 # Autocorrelation and Partial Autocorrelation Plots
-def plots(data, lags=None):
+def plot_autocorr(data, lags=None):
     layout = (1, 3)
     raw  = plt.subplot2grid(layout, (0, 0))
     acf  = plt.subplot2grid(layout, (0, 1))     
@@ -78,29 +88,29 @@ def plots(data, lags=None):
     plt.show(block=False)
 
 plt.rcParams['figure.figsize'] = [11, 4]
-plots(prices, lags=30)      #Very likely 1-day autocorr.
+plot_autocorr(prices, lags=30)      #Very likely 1-day autocorr.
 plt.rcParams['figure.figsize'] = plt.rcParamsDefault["figure.figsize"]
 
 
 
-#==== 2. SPLITTING INTO TRAIN/TEST CHUNKS
-FORECAST_LENGTH = 5    # y
-SEQ_LENGTH = 30    # x + y
-NUM_SEQ = 1000  # (x.shape = (100,29), y.shape= (100,1))
+#==== 3. SPLITTING INTO TRAIN/TEST CHUNKS
+# Predicts closing price given prices of the past month (5-day week)
+SEQ_LENGTH = 20    #No. days as input (1 month)
+NUM_SEQ = 1000  #No. simulations
 
-def get_sequences(data, num_seq=NUM_SEQ, seq_length=SEQ_LENGTH, forecast_length=FORECAST_LENGTH):
-    idxs = np.random.randint(0,prices.shape[0]-seq_length+1, size=num_seq)  #Initializing random start of seq
+def get_sequences(data, num_seq=NUM_SEQ, seq_length=SEQ_LENGTH):
+    idxs = np.random.randint(0,prices.shape[0]-seq_length+1, size=num_seq)  #Initializing random start of sequence
     df = np.zeros(shape=(num_seq,seq_length))
     for i in range(num_seq):
-        df[i,:]= np.array(prices.iloc[idxs[i]:idxs[i]+seq_length]).flatten()
-    X = df[:,:-forecast_length]
-    y = df[:, -forecast_length]
+        df[i,:]= np.array(prices.iloc[idxs[i]:idxs[i]+seq_length]).flatten()    #Simulate sequences
+    X = df[:,:-1]
+    y = df[:, -1]
     return X, y
 
 X, y  = get_sequences(prices)
-X_train, X_test, y_train, y_test = train_test_split(X,y, test_size=0.1)
+X_train, X_test, y_train, y_test = train_test_split(X,y, test_size=0.3)
 
-# Reshaping to Keras format
+# Reshaping X to Keras format (n_features=1)
 def get_keras_format_series(series):
     """
     Convert a series to a numpy array of shape 
@@ -110,7 +120,8 @@ def get_keras_format_series(series):
     series = np.array(series)
     return series.reshape(series.shape[0], series.shape[1], 1)
 
-#==== 3. TRAINING 
+#==== 3. MODELS
+# METRICS 
 def measure_error(y_true, y_pred, label):
     return pd.Series({'MSE': mean_squared_error(y_true, y_pred),
                       'r2': r2_score(y_true, y_pred)},
@@ -122,86 +133,134 @@ def r_squared(y_true, y_pred):
     SS_tot = K.sum(K.square( y_true - K.mean(y_true) ) )
     return ( 1 - SS_res/(SS_tot + K.epsilon()) )    #To prevent dividing by zero
 
+# BUILDING
 # 1. RNN
-# Architecture: 2 RNN Layers x25, 1 Dense Layer x5, (1 Final Dense Layer x1)
-RNN_UNITS = 25
+# Architecture: 1 RNN Layer x64, 1 Dense Layer x5, (1 Final Dense Layer x1)
+RNN_UNITS = 64
 DENSE_UNITS = 5
-BATCH_SIZE = 32
 model_rnn = Sequential()
 model_rnn.add(SimpleRNN(RNN_UNITS,
                     kernel_initializer=initializers.RandomNormal(stddev=0.001),
                     recurrent_initializer=initializers.Identity(gain=1.0),
                     activation='relu',
                     input_shape=get_keras_format_series(X_train).shape[1:]))
-model_rnn.add(SimpleRNN(RNN_UNITS))
 model_rnn.add(Dense(DENSE_UNITS))
 model_rnn.add(Dense(1))
 model_rnn.summary()
 
-    # Optimizer
-adam = keras.optimizers.Adam(learning_rate=0.001)
-rmsprop = keras.optimizers.RMSprop(learning_rate = 0.0001)
-
-# Compiling
-model_rnn.compile(loss='mean_squared_error',
-              optimizer=rmsprop,
-              metrics=[r_squared])
-
-# Fitting
-
-rnn_history = History()
-model_rnn.fit(get_keras_format_series(X_train), y_train,
-          batch_size=BATCH_SIZE,
-          epochs=100,
-          validation_data=(get_keras_format_series(X_test), y_test),
-          callbacks = [rnn_history])
-
-# TESTING
-y_pred = model_rnn.predict(get_keras_format_series(X_test)).flatten()
-measure_error(y_test, y_pred, 'RNN')
-
-sns.scatterplot( x=y_test, y=y_pred,)
-ax = plt.gca()
-ax.set(xlabel='y_true', ylabel='y_pred', title=f'R_Squared: {r2_score(y_test, y_pred):.4f}')
-plt.show()
-pd.DataFrame([y_pred, y_test])
-
-
 # 2. LSTM
-# Architecture: 2 LSTM Layers x25, 1 Dense Layer x5, (1 Final Dense Layer x1)
-LSTM_UNITS = 25
+# Architecture: 1 LSTM Layer x64, 1 Dense Layer x5, (1 Final Dense Layer x1)
+LSTM_UNITS = 64
 DENSE_UNITS = 5
-BATCH_SIZE = 32
 model_lstm = Sequential()
 model_lstm.add(LSTM(LSTM_UNITS,
                     kernel_initializer=initializers.RandomNormal(stddev=0.001),
                     recurrent_initializer=initializers.Identity(gain=1.0),
                     activation='relu',
                     input_shape=get_keras_format_series(X_train).shape[1:]))
-model_lstm.add(LSTM(LSTM_UNITS))
 model_lstm.add(Dense(DENSE_UNITS))
 model_lstm.add(Dense(1))
 model_lstm.summary()
 
-    # Optimizer
-adam = keras.optimizers.Adam(learning_rate=0.001)
-rmsprop = keras.optimizers.RMSprop(learning_rate = 0.0001)
+# TRAINING
+BATCH_SIZE = 32
+def compile_and_fit(model, X_train=X_train, X_test=X_test, y_train=y_train, y_test=y_test, epochs=1000, batch_size=BATCH_SIZE, optimizer='Adam'):
+        # Optimizer
+    if optimizer=='Adam': opt = keras.optimizers.Adam(learning_rate=0.001)
+    if optimizer=='RMSProp': opt = keras.optimizers.RMSprop(learning_rate = 0.0001)
 
-# Compiling
-model_lstm.compile(loss='mean_squared_error',
-              optimizer=adam,
-              metrics=[r_squared])
+    # Compiling
+    model.compile(loss='mean_squared_error',
+                optimizer=opt,
+                metrics=[r_squared])
 
-# Fitting
-lstm_history = History()
-model_lstm.fit(get_keras_format_series(X_train), y_train,
-          batch_size=BATCH_SIZE,
-          epochs=100,
-          validation_data=(get_keras_format_series(X_test), y_test),
-          callbacks = [lstm_history])
+    # Fitting
+    history = History()
+    model.fit(get_keras_format_series(X_train), y_train,
+            batch_size=batch_size,
+            epochs=epochs,
+            validation_data=(get_keras_format_series(X_test), y_test),
+            callbacks = [history])
+    return model, history
+
+model_rnn_fit, rnn_history = compile_and_fit(model=model_rnn, optimizer='RMSProp')
+model_lstm_fit, lstm_history = compile_and_fit(model=model_lstm)
+
+# ==== 4. RESULTS
+# TESTING
+y_hat_rnn = model_rnn.predict(get_keras_format_series(X_test)).flatten()
+y_hat_lstm = model_lstm.predict(get_keras_format_series(X_test)).flatten()
+
+print(measure_error(y_test, y_hat_rnn, 'RNN'))
+print(measure_error(y_test, y_hat_lstm, 'LSTM'))
+
+# FORECASTING NEXT WEEK'S PRICES
+FORECAST_LENGTH = 10
+def predict_t_steps(X_init, t_steps, model):
+    """
+    Given an input series matching the model's expected format,
+    generates model's predictions for next t_steps in the series      
+    """
+    
+    X_init = get_keras_format_series(X_init)
+    preds = []
+    
+    # iteratively take current input sequence, generate next step pred,
+    # and shift input sequence forward by a step (to end with latest pred).
+    # collect preds as we go.
+    for _ in range(t_steps):
+        pred = model.predict(X_init)
+        preds.append(pred)
+        X_init[:,:-1,:] = X_init[:,1:,:]        #replace first t-1 values with 2nd through t-th
+        X_init[:,-1,:] = pred       #replace t-th value with prediction
+    
+    preds = np.array(preds).reshape(-1,len(preds))
+    
+    return preds
+
+y_pred_rnn = predict_t_steps(X_test, FORECAST_LENGTH, model_rnn)
+y_pred_lstm = predict_t_steps(X_test, FORECAST_LENGTH, model_lstm)
+
+start_range = range(1, X_test.shape[1]+1) #starting at one through to length of test_X_init to plot X_init
+predict_range = range(X_test.shape[1],X_test.shape[1]+ FORECAST_LENGTH)  #predict range is going to be from end of X_init to length of test_hours
+
+#using our ranges we plot X_init
+sns.lineplot(start_range, X_test[0,:])
+
+#and test and actual preds
+#plt.plot(predict_range, y_test[0,:], color='orange')
+sns.lineplot(predict_range, y_pred_rnn[0,:], linestyle='--', label="RNN forecast")      #NECESITO CAMBIAR LA FORMA EN QUE SEPARO TEST Y TRAIN.
+sns.lineplot(predict_range, y_pred_lstm[0,:], linestyle='--', label="LSTM forecast")
+plt.show()
+
+
+# Scatter
+sns.scatterplot( x=y_test, y=y_pred,)
+ax = plt.gca()
+ax.set(xlabel='y_true', ylabel='y_pred', title=f'R_Squared: {r2_score(y_test, y_pred):.4f}')
+plt.show()
+pd.DataFrame([y_pred, y_test])
+
+# Loss/R-squared path across epochs
+rnn_history.history.keys()
+r2 = rnn_history.history['val_r_squared']
+loss = rnn_history.history['val_loss']
+
+r2_rolmean = pd.Series(r2).rolling(window=50).mean()   #50-epoch rolling mean
+loss_rolmean = pd.Series(loss).rolling(window=50).mean()
+sns.lineplot(y=r2, x=np.arange(len(r2)), linestyle='dotted', alpha=0.5, label='R2',)
+sns.lineplot(y=r2_rolmean, x=np.arange(len(r2)), label='R2 (50-epoch rol. mean)')
+sns.lineplot(y=loss, x=np.arange(len(loss)), linestyle='dotted', alpha=0.5, label='Loss',)
+sns.lineplot(y=loss_rolmean, x=np.arange(len(loss)), label='Loss (50-epoch rol. mean)')
+ax = plt.gca()
+plt.ylim(bottom=0, top=1)
+plt.xlim(left=50)
+ax.set(xlabel='Epoch', title=f'RNN R-squared = {r2[-1]:.4f}')
+plt.show()
+
+
 
 # TESTING
-
 # Statistics
 y_pred = model_lstm.predict(get_keras_format_series(X_test)).flatten()
 measure_error(y_test, y_pred, 'LSTM')
@@ -216,6 +275,31 @@ plt.show()
 lstm_history.history.keys()
 r2 = lstm_history.history['val_r_squared']
 loss = lstm_history.history['val_loss']
+
+r2_rolmean = pd.Series(r2).rolling(window=50).mean()   #50-epoch rolling mean
+loss_rolmean = pd.Series(loss).rolling(window=50).mean()
+sns.lineplot(y=r2, x=np.arange(len(r2)), linestyle='dotted', alpha=0.5, label='R2',)
+sns.lineplot(y=r2_rolmean, x=np.arange(len(r2)), label='R2 (50-epoch rol. mean)')
+sns.lineplot(y=loss, x=np.arange(len(loss)), linestyle='dotted', alpha=0.5, label='Loss',)
+sns.lineplot(y=loss_rolmean, x=np.arange(len(loss)), label='Loss (50-epoch rol. mean)')
+ax = plt.gca()
+plt.ylim(bottom=0, top=1)
+plt.xlim(left=50)
+ax.set(xlabel='Epoch', title=f'LSTM R-squared = {r2[-1]:.4f}')
+plt.show()
+
+
+sns.lineplot(y=y_pred, x=np.arange(len(r2)), linestyle='dotted', alpha=0.5, label='R2',)
+sns.lineplot(y=r2_rolmean, x=np.arange(len(r2)), label='R2 (50-epoch rol. mean)')
+
+model_lstm.predict(get_keras_format_series(X_test)).shape
+
+
+X_test[0].reshape()
+
+
+
+
 
 
 # TRAIN/TEST SPLITS

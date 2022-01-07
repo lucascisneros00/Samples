@@ -19,7 +19,7 @@ warnings.filterwarnings('ignore')
 
 #==== 1. DATA AND PREPROCESSING
 # IMPORTING
-data = pd.read_csv("data.csv")    #Data with credit card info (N=80,000 excluding repeated obs.)
+data = pd.read_csv("project_1/data.csv")    #Data with credit card info (N=80,000 excluding repeated obs.)
 
 # PREPROCESSING
 data.drop_duplicates(inplace=True)
