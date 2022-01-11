@@ -32,7 +32,7 @@ warnings.filterwarnings('ignore')
 
 #==== 1. DATA AND PREPROCESSING
 # IMPORTING
-data = yf.download('SPY','2002-01-01','2021-12-31')  #Data with SPY daily prices 2012-2021 (20 years)
+data = yf.download('SPY','2002-01-01','2021-12-31')  #Data with SPY daily prices 2002-2021 (20 years)
 prices = pd.DataFrame(data.Close.astype('float32'))
 
 #==== 2. TESTS
