@@ -2,7 +2,6 @@
 
 #==== 0. DEPENDENCIES 
 from datetime import datetime
-from re import A
 import numpy as np, pandas as pd, matplotlib.pyplot as plt, seaborn as sns, os
 import yfinance as yf
 
@@ -13,7 +12,7 @@ from sklearn.metrics import r2_score, mean_squared_error
 from statsmodels.tsa.api import ExponentialSmoothing
 from sklearn.metrics import mean_squared_error as mse
 from tensorflow import keras
-from tensorflow.keras.callbacks import History, EarlyStopping
+from tensorflow.keras.callbacks import History, ModelCheckpoint
 from tensorflow.keras.preprocessing import sequence
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, Dropout
@@ -33,7 +32,7 @@ warnings.filterwarnings('ignore')
 
 #==== 1. DATA AND PREPROCESSING
 # IMPORTING
-data = yf.download('SPY','2012-01-01','2021-12-31')  #Data with SPY daily prices 2012-2021 (10 years)
+data = yf.download('SPY','2002-01-01','2021-12-31')  #Data with SPY daily prices 2012-2021 (20 years)
 prices = pd.DataFrame(data.Close.astype('float32'))
 prices['day_of_week'] = prices.index.weekday       # Monday=0, Sunday=6
 
@@ -92,7 +91,7 @@ plt.rcParams['figure.figsize'] = plt.rcParamsDefault["figure.figsize"]
 # Predicts closing price given prices of the past month (5-day week)
 SEQ_LENGTH = 20    #No. days as input (1 month)
 TEST_LENGTH = 20*12   #Use last year as test set
-
+GAP_LENGTH = 5      #Some overlap between sequences
 # Reshaping X to Keras format (n_features=1)
 def get_keras_format_series(series):
     """
@@ -103,7 +102,7 @@ def get_keras_format_series(series):
     series = np.array(series)
     return series.reshape(series.shape[0], series.shape[1], 1)
 
-def get_sequences(timeseries, seq_length=SEQ_LENGTH, test_length=TEST_LENGTH):
+def get_sequences(timeseries, seq_length=SEQ_LENGTH, test_length=TEST_LENGTH, gap=GAP_LENGTH):
     """
     Split a series into train and test in keras format
     """
@@ -111,7 +110,7 @@ def get_sequences(timeseries, seq_length=SEQ_LENGTH, test_length=TEST_LENGTH):
     test = timeseries[-test_length:]    #test data is the remaining test_length
     X_train, y_train = [], []
 
-    for i in range(0, train.shape[0]-seq_length, seq_length):
+    for i in range(0, train.shape[0]-seq_length, gap):
         X_train.append(train[i:i+seq_length]) #each training sample is of length seq_length
         y_train.append(train[i+seq_length]) #each y is just the next step after training sample
 
@@ -121,7 +120,7 @@ def get_sequences(timeseries, seq_length=SEQ_LENGTH, test_length=TEST_LENGTH):
     # Same process for test set
     X_test, y_test = [], []
 
-    for i in range(0, test.shape[0]-seq_length, seq_length):
+    for i in range(0, test.shape[0]-seq_length, gap):
         X_test.append(test[i:i+seq_length]) #each training sample is of length seq_length
         y_test.append(test[i+seq_length]) #each y is just the next step after training sample
 
@@ -132,7 +131,7 @@ def get_sequences(timeseries, seq_length=SEQ_LENGTH, test_length=TEST_LENGTH):
 
 X_train, X_test, y_train, y_test, train, test  = get_sequences(prices.Close)
 
-#==== 3. MODELS
+#==== 4. MODELS
 # METRICS 
 def measure_error(y_true, y_pred, label):
     return pd.Series({'MSE': mean_squared_error(y_true, y_pred),
@@ -143,13 +142,13 @@ def measure_error(y_true, y_pred, label):
 def r_squared(y_true, y_pred):
     SS_res =  K.sum(K.square( y_true-y_pred ))
     SS_tot = K.sum(K.square( y_true - K.mean(y_true) ) )
-    return ( 1 - SS_res/(SS_tot + K.epsilon()) )    #To prevent dividing by zero
+    return ( 1 - SS_res/(SS_tot + K.epsilon()) )    #K.epsilon() To prevent dividing by zero
 
 # BUILDING
 # 1. RNN
 # Architecture: 1 RNN Layer x64, 1 Dense Layer x5, (1 Final Dense Layer x1)
 RNN_UNITS = 64
-DENSE_UNITS = 5
+DENSE_UNITS = 10
 model_rnn = Sequential()
 model_rnn.add(SimpleRNN(RNN_UNITS,
                     kernel_initializer=initializers.RandomNormal(stddev=0.001),
@@ -161,22 +160,23 @@ model_rnn.add(Dense(1))
 model_rnn.summary()
 
 # 2. LSTM
-# Architecture: 1 LSTM Layer x64, 1 Dense Layer x5, (1 Final Dense Layer x1)
+# Architecture: 1 LSTM Layer x64, 1 Dense Layer x10, (1 Final Dense Layer x1)
 LSTM_UNITS = 64
-DENSE_UNITS = 5
+DENSE_UNITS = 10
 model_lstm = Sequential()
 model_lstm.add(LSTM(LSTM_UNITS,
                     kernel_initializer=initializers.RandomNormal(stddev=0.001),
                     recurrent_initializer=initializers.Identity(gain=1.0),
                     activation='relu',
-                    input_shape=get_keras_format_series(X_train).shape[1:]))
+                    input_shape=get_keras_format_series(X_train).shape[1:]
+                    ))                 
 model_lstm.add(Dense(DENSE_UNITS))
 model_lstm.add(Dense(1))
 model_lstm.summary()
 
 # TRAINING
 BATCH_SIZE = 32
-def compile_and_fit(model, X_train=X_train, X_test=X_test, y_train=y_train, y_test=y_test, epochs=1000, batch_size=BATCH_SIZE, optimizer='Adam'):
+def compile_and_fit(model, X_train=X_train, X_test=X_test, y_train=y_train, y_test=y_test, epochs=500, batch_size=BATCH_SIZE, optimizer='Adam'):
         # Optimizer
     if optimizer=='Adam': opt = keras.optimizers.Adam(learning_rate=0.001)
     if optimizer=='RMSProp': opt = keras.optimizers.RMSprop(learning_rate = 0.0001)
@@ -187,53 +187,98 @@ def compile_and_fit(model, X_train=X_train, X_test=X_test, y_train=y_train, y_te
                 metrics=[r_squared])
 
     # Fitting
-        # Early Stopping to prevent overfitting
-    es = EarlyStopping(monitor='val_loss', mode='min', patience=80)
-
+    '''
+        # Callback to save the best model
+    best_model_path = os.path.join('project_2','models', f'best_{model}')
+    os.makedirs(best_model_path, exist_ok=True)
+    best_model = ModelCheckpoint(
+        filepath=best_model_path,
+        save_weights_only=True,
+        monitor='val_loss',
+        mode='min',
+        save_best_only=True)
+    '''
+        
     history = History()
     model.fit(get_keras_format_series(X_train), y_train,
             batch_size=batch_size,
             epochs=epochs,
             validation_data=(get_keras_format_series(X_test), y_test),
-            callbacks = [history, es])
+            callbacks = [history])
+    #model.load_weights(best_model_path)
     return model, history
 
 model_rnn_fit, rnn_history = compile_and_fit(model=model_rnn, optimizer='RMSProp')
 model_lstm_fit, lstm_history = compile_and_fit(model=model_lstm)
 
-# ==== 4. RESULTS
+# ==== 5. RESULTS
 # TESTING
+# Statistics
 y_hat_rnn = model_rnn.predict(get_keras_format_series(X_test)).flatten()
 y_hat_lstm = model_lstm.predict(get_keras_format_series(X_test)).flatten()
 
 print(measure_error(y_test, y_hat_rnn, 'RNN'))
 print(measure_error(y_test, y_hat_lstm, 'LSTM'))
 
+# Scatters
+sns.scatterplot( x=y_test, y=y_hat_rnn,)
+ax = plt.gca()
+x = np.linspace(*ax.get_xlim())
+ax.plot(x, x)
+ax.set(xlabel='y_true', ylabel='y_pred RNN', title=f'RNN R_Squared: {r2_score(y_test, y_hat_rnn):.4f}')
+plt.show()
+
+sns.scatterplot( x=y_test, y=y_hat_lstm,)
+ax = plt.gca()
+x = np.linspace(*ax.get_xlim())
+ax.plot(x, x)
+ax.set(xlabel='y_true', ylabel='y_pred LSTM', title=f'LSTM R_Squared: {r2_score(y_test, y_hat_lstm):.4f}')
+plt.show()
+
+
+# Loss/R-squared path across epochs
+lstm_history.history.keys()
+r2 = rnn_history.history['val_r_squared']
+loss = rnn_history.history['val_loss']
+
+r2_rolmean = pd.Series(r2).rolling(window=50).mean()   #50-epoch rolling mean
+loss_rolmean = pd.Series(loss).rolling(window=50).mean()
+sns.lineplot(y=r2, x=np.arange(len(r2)), linestyle='dotted', alpha=0.5, label='R2')
+sns.lineplot(y=r2_rolmean, x=np.arange(len(r2)), label='R2 (50-epoch rol. mean)')
+sns.lineplot(y=loss, x=np.arange(len(loss)), linestyle='dotted', alpha=0.5, label='Loss')
+sns.lineplot(y=loss_rolmean, x=np.arange(len(loss)), label='Loss (50-epoch rol. mean)')
+ax = plt.gca()
+plt.ylim(bottom=0, top=1)
+plt.xlim(left=50)
+ax.set(xlabel='Epoch', title=f'LSTM Validation (Out-of-sample) R-squared = {r2[-1]:.4f}')
+plt.show()
+
+
 # FORECASTING NEXT WEEK'S PRICES
-FORECAST_LENGTH = 10
+FORECAST_LENGTH = 5
 def predict_t_steps(X_init, t_steps, model):
     """
     Given an input series matching the model's expected format,
     generates model's predictions for next t_steps in the series      
     """
     
-    X_init = get_keras_format_series(X_init)
+    X = get_keras_format_series(X_init.copy())
     preds = []
     
     # iteratively take current input sequence, generate next step pred,
     # and shift input sequence forward by a step (to end with latest pred).
     # collect preds as we go.
     for _ in range(t_steps):
-        pred = model.predict(X_init)
+        pred = model.predict(X)
         preds.append(pred)
-        X_init[:,:-1,:] = X_init[:,1:,:]        #replace first t-1 values with 2nd through t-th
-        X_init[:,-1,:] = pred       #replace t-th value with prediction
+        X[:,:-1,:] = X[:,1:,:]        #replace first t-1 values with 2nd through t-th
+        X[:,-1,:] = pred       #replace t-th value with prediction
     
-    preds = np.array(preds).reshape(-1,len(preds))
+    preds = np.array(preds).squeeze().T
     
     return preds
 
-EXAMPLE_NO = 3 # We have X_test.shape[0] examples to choose from
+EXAMPLE_NO = 0 # We have X_test.shape[0]/GAP_LENGTH examples to choose from
 def forecast_and_plot(X, forecast_length=FORECAST_LENGTH, n_example=EXAMPLE_NO):        # REVISAR ESTO !!!
     # Forecasts
     y_pred_rnn = predict_t_steps(X, forecast_length, model_rnn)[n_example,:]
@@ -252,166 +297,10 @@ def forecast_and_plot(X, forecast_length=FORECAST_LENGTH, n_example=EXAMPLE_NO):
     sns.lineplot(predict_range, y_true, color='blue', label='Actual value')
     sns.lineplot(predict_range, y_pred_rnn, color='red', linestyle='--', label="RNN forecast") 
     sns.lineplot(predict_range, y_pred_lstm, color='green', linestyle='--', label="LSTM forecast")
+    ax = plt.gca()
+    ax.set(xlabel='Time', ylabel='SPY Closing Price', title='Forecasting next week prices with data of the previous month')
     plt.show()
     return y_true, y_pred_rnn, y_pred_lstm
+print(forecast_and_plot(X_test,FORECAST_LENGTH,EXAMPLE_NO))
 
-forecast_and_plot(X_test,FORECAST_LENGTH,EXAMPLE_NO)
-
-X_test[1,:].flatten().shape
-# Scatter
-sns.scatterplot( x=y_test, y=y_pred,)
-ax = plt.gca()
-ax.set(xlabel='y_true', ylabel='y_pred', title=f'R_Squared: {r2_score(y_test, y_pred):.4f}')
-plt.show()
-pd.DataFrame([y_pred, y_test])
-
-# Loss/R-squared path across epochs
-rnn_history.history.keys()
-r2 = rnn_history.history['val_r_squared']
-loss = rnn_history.history['val_loss']
-
-r2_rolmean = pd.Series(r2).rolling(window=50).mean()   #50-epoch rolling mean
-loss_rolmean = pd.Series(loss).rolling(window=50).mean()
-sns.lineplot(y=r2, x=np.arange(len(r2)), linestyle='dotted', alpha=0.5, label='R2',)
-sns.lineplot(y=r2_rolmean, x=np.arange(len(r2)), label='R2 (50-epoch rol. mean)')
-sns.lineplot(y=loss, x=np.arange(len(loss)), linestyle='dotted', alpha=0.5, label='Loss',)
-sns.lineplot(y=loss_rolmean, x=np.arange(len(loss)), label='Loss (50-epoch rol. mean)')
-ax = plt.gca()
-plt.ylim(bottom=0, top=1)
-plt.xlim(left=50)
-ax.set(xlabel='Epoch', title=f'RNN R-squared = {r2[-1]:.4f}')
-plt.show()
-
-
-
-# TESTING
-# Statistics
-y_pred = model_lstm.predict(get_keras_format_series(X_test)).flatten()
-measure_error(y_test, y_pred, 'LSTM')
-
-# Scatter
-sns.scatterplot( x=y_test, y=y_pred,)
-ax = plt.gca()
-ax.set(xlabel='y_true', ylabel='y_pred', title=f'R_Squared: {r2_score(y_test, y_pred):.4f}')
-plt.show()
-
-# Loss/R-squared path across epochs
-lstm_history.history.keys()
-r2 = lstm_history.history['val_r_squared']
-loss = lstm_history.history['val_loss']
-
-r2_rolmean = pd.Series(r2).rolling(window=50).mean()   #50-epoch rolling mean
-loss_rolmean = pd.Series(loss).rolling(window=50).mean()
-sns.lineplot(y=r2, x=np.arange(len(r2)), linestyle='dotted', alpha=0.5, label='R2',)
-sns.lineplot(y=r2_rolmean, x=np.arange(len(r2)), label='R2 (50-epoch rol. mean)')
-sns.lineplot(y=loss, x=np.arange(len(loss)), linestyle='dotted', alpha=0.5, label='Loss',)
-sns.lineplot(y=loss_rolmean, x=np.arange(len(loss)), label='Loss (50-epoch rol. mean)')
-ax = plt.gca()
-plt.ylim(bottom=0, top=1)
-plt.xlim(left=50)
-ax.set(xlabel='Epoch', title=f'LSTM R-squared = {r2[-1]:.4f}')
-plt.show()
-
-
-sns.lineplot(y=y_pred, x=np.arange(len(r2)), linestyle='dotted', alpha=0.5, label='R2',)
-sns.lineplot(y=r2_rolmean, x=np.arange(len(r2)), label='R2 (50-epoch rol. mean)')
-
-model_lstm.predict(get_keras_format_series(X_test)).shape
-
-
-X_test[0].reshape()
-
-
-
-
-
-
-# TRAIN/TEST SPLITS
-FORECAST = 5
-START = 1600
-
-train = prices[:-FORECAST]
-test = prices[-FORECAST:]
-
-from statsmodels.tsa.api import SimpleExpSmoothing
-
-single = SimpleExpSmoothing(train).fit(optimized=True)
-single_preds = single.forecast(len(test))
-single_mse = mse(test, single_preds)
-print("Predictions: ", single_preds)
-print("MSE: ", single_mse)
-
-from statsmodels.tsa.api import Holt
-
-double = Holt(train).fit(optimized=True)
-double_preds = double.forecast(len(test))
-double_mse = mse(test, double_preds)
-print("Predictions: ", double_preds)
-print("MSE: ", double_mse)
-
-triple = ExponentialSmoothing(train,
-                              trend="additive",
-                              seasonal="additive",
-                              seasonal_periods=(5)).fit(optimized=True)
-triple_preds = triple.forecast(len(test))
-triple_mse = mse(test, triple_preds)
-print("Predictions: ", triple_preds)
-print("MSE: ", triple_mse)
-
-
-plt.plot(prices.index[:-FORECAST], train, 'b--', label="train")
-plt.plot(prices.index[-FORECAST:], test, color='orange', linestyle="--", label="test")
-plt.plot(prices.index[-FORECAST:], triple_preds, 'r--', label="predictions")
-plt.legend(loc='upper left')
-plt.title("Triple Exponential Smoothing")
-plt.grid(alpha=0.3);
-plt.show()
-
-
-from statsmodels.tsa.statespace.sarimax import SARIMAX
-sar = sm.tsa.statespace.SARIMAX(prices, 
-                                order=(1,0,1), 
-                                seasonal_order=(0,0,1,30), 
-                                trend='t').fit()
-sar_preds = sar.forecast(len(test))
-sar_mse = mse(test, sar_preds)
-#print("Predictions: ", sar_preds)
-print("MSE: ", sar_mse)
-
-
-#==== 2. TRAINING
-# Function that returns metrics for validation
-def measure_error(y_true, y_pred, label):
-    return pd.Series({'roc_auc':roc_auc_score(y_true, y_pred),
-                      'precision': precision_score(y_true, y_pred),
-                      'recall': recall_score(y_true, y_pred),
-                      'r2': r2_score(y_true, y_pred)},
-                      name=label)
-models = [None] * 4         #List of tuned models
-
-
-#==== 3. RESULTS
-# COMPUTING METRICS
-y_hat = [None] * 4
-aux = [None] * 4
-
-for i in range(4):
-    y_hat[i] = models[i].predict(X_test)
-    aux[i] = measure_error(y_test, y_hat[i], 'Model '+str(i))
-
-results = pd.concat([aux[0], aux[1], aux[2], aux[3]],
-                              axis=1)
-results.columns = ['Logistic Reg.', 'SVM', 'Rand. Forest', 'Voting Classifier']
-print(results)
-
-# PLOTTING
-plot = results.unstack().reset_index() 
-plot.columns = ["Model", "Metric", "Value"]
-ax = sns.barplot(x="Model", y="Value", hue="Metric", data=plot)
-ax.set(ylabel="")
-plt.show()
-
-r2s = list(results.iloc[3])
-idx = r2s.index(max(r2s))
-best_model = results.columns[idx]
-print (f"\nBest model: {best_model}\nR-squared: {max(r2s):.4f}")
+# ... For the future: compare results with traditional ARIMA/GARCH models

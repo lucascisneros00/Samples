@@ -1,0 +1,2 @@
+model_checkpoint_path: "best_<tensorflow.python.keras.engine.sequential.Sequential object at 0x1502bcf40>"
+all_model_checkpoint_paths: "best_<tensorflow.python.keras.engine.sequential.Sequential object at 0x1502bcf40>"
