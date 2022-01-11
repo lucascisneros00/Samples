@@ -34,14 +34,6 @@ warnings.filterwarnings('ignore')
 # IMPORTING
 data = yf.download('SPY','2002-01-01','2021-12-31')  #Data with SPY daily prices 2012-2021 (20 years)
 prices = pd.DataFrame(data.Close.astype('float32'))
-prices['day_of_week'] = prices.index.weekday       # Monday=0, Sunday=6
-
-prices['day_of_week'][1:]
-
-# Get sequences as weeks (starts at monday, ends on friday; sequences that include holidays are dropped (len(seq)<5))
-'''
-CODE HERE (not in use yet)
-'''
 
 #==== 2. TESTS
 # Dickey-Fuller Test (DFT)
@@ -84,8 +76,6 @@ def plot_autocorr(data, lags=None):
 plt.rcParams['figure.figsize'] = [11, 4]
 plot_autocorr(prices.Close, lags=30)      #Very likely 1-day autocorr.
 plt.rcParams['figure.figsize'] = plt.rcParamsDefault["figure.figsize"]
-
-
 
 #==== 3. SPLITTING INTO TRAIN/TEST CHUNKS
 # Predicts closing price given prices of the past month (5-day week)
@@ -279,7 +269,7 @@ def predict_t_steps(X_init, t_steps, model):
     return preds
 
 EXAMPLE_NO = 0 # We have X_test.shape[0]/GAP_LENGTH examples to choose from
-def forecast_and_plot(X, forecast_length=FORECAST_LENGTH, n_example=EXAMPLE_NO):        # REVISAR ESTO !!!
+def forecast_and_plot(X, forecast_length=FORECAST_LENGTH, n_example=EXAMPLE_NO):
     # Forecasts
     y_pred_rnn = predict_t_steps(X, forecast_length, model_rnn)[n_example,:]
     y_pred_lstm = predict_t_steps(X, forecast_length, model_lstm)[n_example,:]
