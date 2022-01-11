@@ -1,10 +1,8 @@
 # Predicting the S&P500
-Deep Neural Networks have seen a great surge in popularity among Financial Analysts,
-because of their ability to discern very complex patterns in data. Coupled with increasing computing power,
-these models have become very useful for computing financial estimates with large data sets.
-The main objective of this analysis is, precisely, to take advantage of Deep Learning models to predict
-the SPY ETF (which tracks the S&P 500 Index) and to compare these with traditional time series models 
-(ARIMA, GARCH).
+I employ Deep Neural Networks, namely, RNN and LSTM architectures in order to predict next week's prices
+of the SPY ETF (S&P 500 tracker), with only data of the previous month. In the future it would be interesting to
+compare how these fare against traditional time series models (GARCH/ARIMA).
 
 # Data
-The data consists of daily prices of SPY for the year 2021 (247 obs.), retrieved from Yahoo! Finance.
+The data consists of daily prices of SPY for the last 20 years 2021 (5035 obs.), retrieved from Yahoo! Finance.
+The models would severely improve with larger data sets, with minute-by-minute information for example.
